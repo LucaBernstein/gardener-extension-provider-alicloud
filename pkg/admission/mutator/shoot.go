@@ -15,6 +15,7 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	gardencorev1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/utils/gardener"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -222,19 +223,25 @@ func (s *shootMutator) setDefaultForEncryptedDisk(ctx context.Context, shoot *co
 }
 
 func (s *shootMutator) isCustomizedImage(ctx context.Context, shoot *corev1beta1.Shoot, imageName string, imageVersion *string) (bool, error) {
-	cloudProfile := shoot.Spec.CloudProfileName
+	cloudProfile, err := gardener.GetCloudProfile(ctx, s.client, shoot)
+	if err != nil {
+		return false, err
+	}
+	if cloudProfile == nil {
+		return false, fmt.Errorf("cloudprofile could not be found")
+	}
 	region := shoot.Spec.Region
-	logger.Info("Checking in cloudProfie", "CloudProfile", cloudProfile, "Region", region)
+	logger.Info("Checking in cloudProfile", "CloudProfile", client.ObjectKeyFromObject(cloudProfile), "Region", region)
 	imageId, err := s.getImageId(ctx, imageName, imageVersion, region, cloudProfile)
 	if err != nil || imageId == "" {
 		return false, err
 	}
 	logger.Info("Got ImageID", "ImageID", imageId)
-	isOwnedByAli, err := s.isOwnedbyAliCloud(ctx, shoot, imageId, region)
+	isOwnedByAli, err := s.isOwnedByAliCloud(ctx, shoot, imageId, region)
 	return !isOwnedByAli, err
 }
 
-func (s *shootMutator) isOwnedbyAliCloud(ctx context.Context, shoot *corev1beta1.Shoot, imageId string, region string) (bool, error) {
+func (s *shootMutator) isOwnedByAliCloud(ctx context.Context, shoot *corev1beta1.Shoot, imageId string, region string) (bool, error) {
 	var (
 		secretBinding = &corev1beta1.SecretBinding{}
 	)
@@ -276,15 +283,8 @@ func (s *shootMutator) isOwnedbyAliCloud(ctx context.Context, shoot *corev1beta1
 	return false, nil
 }
 
-func (s *shootMutator) getImageId(ctx context.Context, imageName string, imageVersion *string, imageRegion string, cloudProfileName string) (string, error) {
-	var (
-		cloudProfile    = &corev1beta1.CloudProfile{}
-		cloudProfileKey = client.ObjectKey{Name: cloudProfileName}
-	)
-	if err := kutil.LookupObject(ctx, s.client, s.apiReader, cloudProfileKey, cloudProfile); err != nil {
-		return "", err
-	}
-	cloudProfileConfig, err := s.getCloudProfileConfig(cloudProfile)
+func (s *shootMutator) getImageId(ctx context.Context, imageName string, imageVersion *string, imageRegion string, cloudProfileSpec *corev1beta1.CloudProfile) (string, error) {
+	cloudProfileConfig, err := s.getCloudProfileConfig(cloudProfileSpec)
 	if err != nil {
 		return "", err
 	}
@@ -294,7 +294,7 @@ func (s *shootMutator) getImageId(ctx context.Context, imageName string, imageVe
 func (s *shootMutator) getCloudProfileConfig(cloudProfile *corev1beta1.CloudProfile) (*api.CloudProfileConfig, error) {
 	var cloudProfileConfig = &api.CloudProfileConfig{}
 	if _, _, err := s.codec.Decode(cloudProfile.Spec.ProviderConfig.Raw, nil, cloudProfileConfig); err != nil {
-		return nil, fmt.Errorf("could not decode providerConfig of cloudProfile for '%s': %w", kutil.ObjectName(cloudProfile), err)
+		return nil, fmt.Errorf("could not decode providerConfig of cloudProfile for '%s': %w", client.ObjectKeyFromObject(cloudProfile), err)
 	}
 
 	return cloudProfileConfig, nil
